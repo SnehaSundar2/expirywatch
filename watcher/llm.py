@@ -30,6 +30,7 @@ def available():
 
 
 _discovered = {}
+GEMINI_TIMEOUT = float(os.getenv("GEMINI_TIMEOUT", "30"))
 
 
 def _gemini_candidates():
@@ -46,7 +47,7 @@ def _gemini_candidates():
         ordered = sorted(flash or names, key=lambda n: ("lite" in n, [-int(x) if x.isdigit() else 0 for x in re.split(r"[-.]", n)]))
     except Exception:
         ordered = [DEFAULTS["gemini"]]
-    _discovered["list"] = ordered[:6] or [DEFAULTS["gemini"]]
+    _discovered["list"] = ordered[:8] or [DEFAULTS["gemini"]]
     return _discovered["list"]
 
 
@@ -96,28 +97,57 @@ def chat_json(system, user, max_tokens=1500):
         models = [os.environ["LLM_MODEL"]] if os.getenv("LLM_MODEL") else (
             ([_discovered["gemini"]] if "gemini" in _discovered else []) + _gemini_candidates())
         last = None
-        for m in dict.fromkeys(models):  # busy or retired model -> wait briefly, retry, then try the next one
+        r, errors = None, []
+        for m in dict.fromkeys(models):  # busy, slow or retired model -> retry once, then try the next one
             for attempt in range(2):
-                r = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
-                    headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
-                    json={"systemInstruction": {"parts": [{"text": system}]},
-                          "contents": [{"role": "user", "parts": [{"text": user}]}],
-                          "generationConfig": {"responseMimeType": "application/json",
-                                               "maxOutputTokens": max(max_tokens, 4096)}},
-                    timeout=90)
+                try:
+                    r = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+                        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+                        json={"systemInstruction": {"parts": [{"text": system}]},
+                              "contents": [{"role": "user", "parts": [{"text": user}]}],
+                              "generationConfig": {"responseMimeType": "application/json",
+                                                   "maxOutputTokens": max(max_tokens, 4096)}},
+                        timeout=GEMINI_TIMEOUT)
+                except requests.RequestException as e:
+                    r = None
+                    errors.append(f"{m}: {type(e).__name__}")
+                    break
                 if r.status_code in (429, 500, 503) and attempt == 0:
                     time.sleep(2)
                     continue
                 break
-            if r.status_code == 200:
+            if r is not None and r.status_code == 200:
                 _discovered["gemini"] = m
                 break
-            last = r
-        else:
-            last.raise_for_status()
+            if r is not None:
+                errors.append(f"{m}: HTTP {r.status_code}")
+            r = None
+        if r is None:
+            raise RuntimeError("No Gemini model answered (" + "; ".join(errors[-6:]) + ")")
         parts = r.json()["candidates"][0]["content"]["parts"]
         text = "".join(p_.get("text", "") for p_ in parts)
     else:
         raise RuntimeError("No LLM API key configured")
     return _extract_json(text)
+
+
+def diagnose():
+    """Which models answer for this key (never returns the key)."""
+    out = {"provider": provider(), "candidates": _gemini_candidates() if provider() == "gemini" else [model_name()]}
+    results = []
+    for m in out["candidates"][:8]:
+        try:
+            if provider() != "gemini":
+                chat_json("Reply with JSON.", 'Return {"ok": true}')
+                results.append({"model": m, "ok": True})
+                break
+            r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+                              headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+                              json={"contents": [{"role": "user", "parts": [{"text": 'Reply with exactly {"ok": true}'}]}],
+                                    "generationConfig": {"responseMimeType": "application/json"}}, timeout=GEMINI_TIMEOUT)
+            results.append({"model": m, "status": r.status_code, "reply": r.text[:160] if r.status_code != 200 else "ok"})
+        except Exception as e:
+            results.append({"model": m, "error": type(e).__name__})
+    out["results"] = results
+    return out

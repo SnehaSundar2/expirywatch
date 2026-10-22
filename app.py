@@ -146,6 +146,13 @@ def ics():
                     headers={"Content-Disposition": "attachment; filename=expirywatch.ics"})
 
 
+@app.get("/api/ai-check")
+def ai_check():
+    if not llm.available():
+        return jsonify(ok=False, msg="No AI key configured")
+    return jsonify(llm.diagnose())
+
+
 @app.get("/api/state")
 def api_state():
     rows, _, tickets = state()
