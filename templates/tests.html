@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Official test cases — ExpiryWatch{% endblock %}
+{% block body %}
+<div class="bar" style="justify-content:space-between">
+  <div><h1 style="margin:0;font-size:22px">Official test cases</h1>
+  <div class="muted">Each case runs the real agent. The page records the input, the expected result, what actually happened, and the evidence. Failures are shown as failures.</div></div>
+  <div class="bar"><form method="post" action="/api/lab/reset"><button class="btn ghost">↺ Reset test lab</button></form>
+  <form method="post" action="/api/tests/all" data-busy="Running…"><button class="btn">▶ Run all 4</button></form></div>
+</div>
+<div class="card small" style="margin:14px 0">
+  <b>Recommended demo order:</b> Run <b>TC1</b> → approve the renewal ticket below (human approval) → run <b>TC2</b>. TC2 renews the lab certificate and the agent rechecks it, which closes the ticket. Then run <b>TC3</b> and <b>TC4</b>.<br>
+  <span class="muted">Test lab: a local HTTPS server that presents synthetic certificates for <span class="mono">shop.lab.test</span> (10 days) and <span class="mono">api.shop.lab.test</span> (200 days). The real certificate and RDAP checks run against them. TC3 simulates the RDAP lookup service being down for <span class="mono">github.com</span>.</span>
+</div>
+{% for t in pending %}
+<div class="appr" style="margin-bottom:14px"><div><span class="s s-proposed">waiting for approval</span> <b>{{ t.title }}</b>
+  <div class="small muted">Destination: {{ t.destination }}</div><pre>{{ t.body }}</pre></div>
+  <div><form method="post" action="/api/tickets/{{ t.id }}/approve"><input type="hidden" name="back" value="/tests"><label class="small muted">Approver name</label>
+  <input name="who" placeholder="Your name" required><button class="btn ok" style="width:100%">✔ Approve &amp; open ticket</button></form></div></div>
+{% endfor %}
+{% for tc, (scenario, expected) in cases.items() %}{% set r = results.get(tc) %}
+<div class="tc" id="{{ tc }}">
+  <div><div class="res {{ 'pass' if r and r.result=='PASS' else 'fail' if r else 'muted' }}">{{ r.result if r else 'not run' }}</div>
+    <div style="font-weight:700">{{ tc }}</div>
+    <form method="post" action="/api/tests/{{ tc }}" data-busy="…" style="margin-top:8px"><button class="btn ghost" style="padding:5px 10px">▶ Run {{ tc }}</button></form></div>
+  <div class="kv"><b>Scenario</b><span>{{ scenario }}</span><b>Expected</b><span>{{ expected }}</span>
+    {% if r %}<b>Input</b><span>{{ r.input }}</span><b>Actual</b><span>{{ r.actual }}</span><b>Ran at</b><span>{{ r.ran_at[:19].replace('T',' ') }} UTC</span>
+    <b>Evidence</b><details><summary>show raw evidence</summary><pre class="ev">{{ r.evidence|tojson(indent=2) }}</pre></details>{% endif %}</div>
+</div>
+{% endfor %}
+{% endblock %}

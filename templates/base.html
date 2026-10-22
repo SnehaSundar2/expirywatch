@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}ExpiryWatch{% endblock %}</title><link rel="stylesheet" href="/static/app.css"></head>
+<body>
+<div class="top"><div class="logo">Expiry<span>Watch</span></div>
+  <nav><a href="/" class="{{ 'on' if request.path=='/' }}">Dashboard</a><a href="/tests" class="{{ 'on' if request.path=='/tests' }}">Official test cases</a><a href="/calendar.ics">Calendar (.ics)</a></nav>
+  <div class="pill">{% if ai %}🧠 AI planner: {{ model }}{% else %}⚙️ Rule planner (add an AI key in .env to enable the AI planner){% endif %}</div></div>
+<div class="wrap">
+{% if request.args.msg %}<div class="flash">{{ request.args.msg }}</div>{% endif %}
+{% if request.args.error %}<div class="flash err">{{ request.args.error }}</div>{% endif %}
+{% block body %}{% endblock %}
+</div>
+<script>
+async function runNow(btn){ btn.disabled=true; btn.textContent='Agent is checking…';
+  const r = await (await fetch('/api/run',{method:'POST'})).json(); if(!r.ok) alert(r.msg); location.reload(); }
+document.querySelectorAll('form[data-busy]').forEach(f=>f.addEventListener('submit',()=>{const b=f.querySelector('button');b.disabled=true;b.textContent=f.dataset.busy;}));
+</script>
+</body></html>

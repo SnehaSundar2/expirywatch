@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="bar" style="justify-content:space-between;margin-bottom:14px">
+  <div><h1 style="margin:0;font-size:22px">SSL &amp; domain expiry watcher</h1>
+    <div class="muted">The agent checks certificates and domain registrations, raises alerts before they expire, and proposes renewal tickets for a human to approve.</div></div>
+  <button class="btn" onclick="runNow(this)">▶ Run check now</button>
+</div>
+<div class="stats">
+  <div class="stat"><b>{{ stats.watched }}</b><span>items watched (certificates + domains)</span></div>
+  <div class="stat"><b style="color:var(--crit)">{{ stats.alerts }}</b><span>active alerts</span></div>
+  <div class="stat"><b style="color:var(--warn)">{{ stats.approval }}</b><span>tickets awaiting your approval</span></div>
+  <div class="stat"><b style="color:var(--unk)">{{ stats.unchecked }}</b><span>unchecked (lookup failed)</span></div>
+</div>
+<p class="muted small">Last run: {% if last_run %}#{{ last_run.id }} ({{ last_run.trigger }}, {{ last_run.planner or '' }}) at {{ last_run.started_at[:16].replace('T',' ') }} UTC — {{ last_run.summary or 'running…' }}{% else %}none yet{% endif %}.
+  Rules: certificate warning ≤ {{ thresholds[0] }} days, critical ≤ {{ thresholds[1] }}; domain warning ≤ {{ thresholds[2] }}, critical ≤ {{ thresholds[3] }}.</p>
+
+<h2 id="approvals">🧑‍⚖️ Waiting for your approval</h2>
+<div class="sub">The agent never opens a ticket by itself. Check the destination and content, then approve or reject.</div>
+<div class="approvals">
+{% for t in tickets if t.state == 'proposed' %}
+  <div class="appr">
+    <div><span class="s s-proposed">proposed</span> <span class="s s-critical">{{ t.priority }}</span>
+      <div style="font-weight:700;margin-top:6px">{{ t.title }}</div>
+      <div class="small muted">Destination: <b>{{ t.destination }}</b> · Proposed {{ t.created_at[:16].replace('T',' ') }} UTC · Duplicate key <span class="mono">{{ t.idem_key }}</span></div>
+      <pre>{{ t.body }}</pre></div>
+    <div><form method="post" action="/api/tickets/{{ t.id }}/approve"><label class="small muted">Approver name</label>
+        <input name="who" placeholder="Your name" required><button class="btn ok" style="width:100%">✔ Approve &amp; open ticket</button></form>
+      <form method="post" action="/api/tickets/{{ t.id }}/reject" style="margin-top:8px"><input type="hidden" name="who" value="Ops reviewer">
+        <button class="btn danger" style="width:100%">✖ Reject</button></form></div>
+  </div>
+{% else %}<div class="card muted">Nothing waiting. 👍</div>{% endfor %}
+</div>
+
+<h2>📅 Expiry calendar</h2>
+<div class="sub">Every watched certificate and domain by expiry date. <a href="/calendar.ics">Add to Google/Outlook calendar (.ics)</a>, which includes reminders 14 days before.</div>
+<div class="cal">
+{% for month, evs in cal.items() %}
+  <div class="card month"><h4>{{ month }}</h4>
+  {% for e in evs %}<div class="ev"><div class="d">{{ e.date }}</div><span class="s s-{{ e.row.status }}">{{ e.row.status }}</span>
+    <div>{{ '🔒' if e.row.kind=='cert' else '🌐' }} {{ e.row.target }}{% if e.stale %} <span class="small muted">(last known)</span>{% endif %}</div></div>{% endfor %}
+  </div>
+{% else %}<div class="card muted">No data yet. Click "Run check now".</div>{% endfor %}
+</div>
+
+<h2 id="items">🔍 Everything being watched</h2>
+<div class="tbl"><table>
+<tr><th>Item</th><th>Type</th><th>Status</th><th>Expires</th><th>Days left</th><th>Alert / ticket</th><th>Evidence</th></tr>
+{% for r in rows %}
+<tr><td><b>{{ r.target }}</b><div class="small muted">{{ r.domain.label or '' }} · owner {{ r.domain.owner or '—' }}</div></td>
+  <td>{{ 'SSL certificate' if r.kind=='cert' else 'Domain registration' }}</td>
+  <td><span class="s s-{{ r.status }}">{{ r.status }}</span></td>
+  <td>{% if r.expires_at %}{{ r.expires_at[:10] }}{% elif r.prev %}<span class="muted">last known {{ r.prev.expires_at[:10] }}</span>{% else %}—{% endif %}</td>
+  <td>{{ '%.0f'|format(r.days_left) if r.days_left is not none else '—' }}</td>
+  <td>{% if r.alert %}<span class="s s-{{ r.alert.severity }}">alert</span>{% endif %}
+      {% if r.ticket %}<span class="s s-{{ r.ticket.state }}">ticket {{ r.ticket.state }}</span>{% endif %}
+      {% if not r.alert and not r.ticket %}<span class="muted">—</span>{% endif %}</td>
+  <td><details><summary>{{ r.checked_at[:16].replace('T',' ') }} UTC</summary>
+    <div class="small">{% if r.error %}<b style="color:var(--crit)">Why unchecked:</b> {{ r.error }}<br>{% endif %}
+      Source: <span class="mono">{{ r.source }}</span><br>
+      {% if r.serial %}Serial: <span class="mono">{{ r.serial[:24] }}</span><br>{% endif %}
+      {% if r.issuer %}{{ 'Issuer' if r.kind=='cert' else 'Registrar' }}: {{ r.issuer }}<br>{% endif %}
+      {% if r.evidence.trusted is defined and r.evidence.trusted is not none %}Trusted by browsers: {{ 'yes' if r.evidence.trusted else 'NO — ' ~ r.evidence.trust_error }}<br>{% endif %}
+      {% if r.evidence.sans %}Covers: {{ r.evidence.sans[:5]|join(', ') }}{% endif %}</div></details>
+    {% if r.kind=='cert' %}<form method="post" action="/api/domains/{{ r.domain_id }}/remove" onsubmit="return confirm('Stop watching {{ r.target }}?')"><button class="btn ghost small" style="padding:2px 8px;margin-top:4px;font-size:11px">stop watching</button></form>{% endif %}</td></tr>
+{% endfor %}
+</table></div>
+<div class="card" style="margin-top:12px"><b>Add a domain to watch</b>
+  <form class="add" method="post" action="/api/domains" style="margin-top:8px" data-busy="Checking…">
+    <input name="host" placeholder="example.com or api.example.com" required style="flex:2;min-width:220px">
+    <input name="port" placeholder="443" style="width:80px"><input name="label" placeholder="Label (optional)" style="flex:1;min-width:140px">
+    <input name="owner" placeholder="Owner team" style="flex:1;min-width:120px"><button class="btn">Add &amp; check</button></form></div>
+
+<div class="cols">
+  <div><h2>🎫 Tickets</h2><div class="sub">Destination: {{ dest }}</div>
+  <div class="tbl"><table><tr><th>#</th><th>Ticket</th><th>State</th><th>Decision / verification</th></tr>
+  {% for t in tickets %}<tr><td>{{ t.id }}</td><td>{{ t.title }}<div class="small muted">{{ t.external_ref or '' }}</div></td><td><span class="s s-{{ t.state }}">{{ t.state }}</span></td>
+    <td class="small">{% if t.decided_by %}{{ t.state }} by {{ t.decided_by }} {{ t.decided_at[:16].replace('T',' ') }}<br>{% endif %}{{ t.verify_note or '' }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">No tickets yet.</td></tr>{% endfor %}</table></div></div>
+  <div><h2>🧠 Agent activity</h2><div class="sub">What the agent planned, checked, decided and did</div>
+  <div class="card log">{% for e in events %}<div><span class="k k-{{ e.kind }}">{{ e.kind }}</span><span>{{ e.msg }}<span class="small muted"> · {{ e.t[11:16] }}</span></span></div>{% endfor %}</div></div>
+</div>
+{% endblock %}
