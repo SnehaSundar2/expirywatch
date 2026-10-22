@@ -4,6 +4,7 @@ With no key, available() is False and the agent runs on its rule-based brain."""
 import json
 import os
 import re
+import time
 
 import requests
 
@@ -31,10 +32,10 @@ def available():
 _discovered = {}
 
 
-def _gemini_pick():
-    """Ask Google which models this key can use and pick a current Flash model."""
-    if "gemini" in _discovered:
-        return _discovered["gemini"]
+def _gemini_candidates():
+    """Ask Google which models this key can use; return current Flash models, newest first."""
+    if "list" in _discovered:
+        return _discovered["list"]
     try:
         r = requests.get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
                          headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]}, timeout=20)
@@ -42,11 +43,11 @@ def _gemini_pick():
         names = [m["name"].split("/")[-1] for m in r.json().get("models", [])
                  if "generateContent" in m.get("supportedGenerationMethods", [])]
         flash = [n for n in names if "flash" in n and not any(w in n for w in ("image", "tts", "audio", "live", "exp", "preview", "thinking"))]
-        pick = sorted(flash or names, key=lambda n: ("lite" in n, [-int(x) if x.isdigit() else 0 for x in re.split(r"[-.]", n)]))[0]
+        ordered = sorted(flash or names, key=lambda n: ("lite" in n, [-int(x) if x.isdigit() else 0 for x in re.split(r"[-.]", n)]))
     except Exception:
-        pick = DEFAULTS["gemini"]
-    _discovered["gemini"] = pick
-    return pick
+        ordered = [DEFAULTS["gemini"]]
+    _discovered["list"] = ordered[:6] or [DEFAULTS["gemini"]]
+    return _discovered["list"]
 
 
 def model_name():
@@ -92,18 +93,31 @@ def chat_json(system, user, max_tokens=1500):
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
     elif p == "gemini":
-        if not os.getenv("LLM_MODEL"):
-            model = _gemini_pick()
-        r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
-            json={"systemInstruction": {"parts": [{"text": system}]},
-                  "contents": [{"role": "user", "parts": [{"text": user}]}],
-                  "generationConfig": {"responseMimeType": "application/json",
-                                       "maxOutputTokens": max_tokens}},
-            timeout=90)
-        r.raise_for_status()
-        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        models = [os.environ["LLM_MODEL"]] if os.getenv("LLM_MODEL") else (
+            ([_discovered["gemini"]] if "gemini" in _discovered else []) + _gemini_candidates())
+        last = None
+        for m in dict.fromkeys(models):  # busy or retired model -> wait briefly, retry, then try the next one
+            for attempt in range(2):
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
+                    headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+                    json={"systemInstruction": {"parts": [{"text": system}]},
+                          "contents": [{"role": "user", "parts": [{"text": user}]}],
+                          "generationConfig": {"responseMimeType": "application/json",
+                                               "maxOutputTokens": max(max_tokens, 4096)}},
+                    timeout=90)
+                if r.status_code in (429, 500, 503) and attempt == 0:
+                    time.sleep(2)
+                    continue
+                break
+            if r.status_code == 200:
+                _discovered["gemini"] = m
+                break
+            last = r
+        else:
+            last.raise_for_status()
+        parts = r.json()["candidates"][0]["content"]["parts"]
+        text = "".join(p_.get("text", "") for p_ in parts)
     else:
         raise RuntimeError("No LLM API key configured")
     return _extract_json(text)
